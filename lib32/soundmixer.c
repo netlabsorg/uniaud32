@@ -408,13 +408,6 @@ OSSRET OSS32_MixSetVolume(OSSSTREAMID streamid, ULONG line, ULONG volume)
       idx = pHandle->controls[OSS_MIXER_FRONT].idxVolume;
       idxMute = pHandle->controls[OSS_MIXER_FRONT].idxMute;
     }
-    /* HDA codecs workaround from Andy */
-    if (idx == -1)
-    {
-      idx = pHandle->controls[OSS_MIXER_SPEAKER].idxVolume;
-      idxMute = pHandle->controls[OSS_MIXER_SPEAKER].idxMute;
-    }
-    /* HDA codecs workaround from Andy */
     break;
   case OSS32_MIX_VOLUME_MIDI:
     idx = pHandle->controls[OSS_MIXER_SYNTH].idxVolume;
