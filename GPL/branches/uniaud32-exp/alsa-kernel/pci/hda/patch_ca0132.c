@@ -6671,7 +6671,7 @@ static int ca0132_alt_add_effect_slider(struct hda_codec *codec, hda_nid_t nid,
 
 	};
 	knew.name = namestr;
-	knew.private_value = ((nid) | ((1)<<16) | ((type)<<18) | ((0)<<19) | ((0)<<23)) | 0;
+	knew.private_value = HDA_COMPOSE_AMP_VAL(nid, 1, 0, type) | 0;
 #endif
 	sprintf(namestr, "FX: %s %s Volume", pfx, dirstr[dir]);
 
