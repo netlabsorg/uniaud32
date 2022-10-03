@@ -365,7 +365,7 @@ static void __snd_release_pages(struct device *dev, void *res)
  * hence it can't work with SNDRV_DMA_TYPE_CONTINUOUS or
  * SNDRV_DMA_TYPE_VMALLOC type.
  *
- * The function returns the snd_dma_buffer object at success, or NULL if failed.
+ * Return: the snd_dma_buffer object at success, or NULL if failed
  */
 struct snd_dma_buffer *
 snd_devm_alloc_dir_pages(struct device *dev, int type,

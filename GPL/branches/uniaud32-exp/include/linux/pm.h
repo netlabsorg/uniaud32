@@ -246,6 +246,7 @@ struct dev_pm_info {
 	struct device		* pm_parent;
 	struct list_head	entry;
 	enum rpm_status		runtime_status;
+	unsigned int		runtime_auto:1;
 };
 
 extern void device_pm_set_parent(struct device * dev, struct device * parent);

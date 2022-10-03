@@ -160,7 +160,8 @@ void snd_ctl_notify(struct snd_card *card, unsigned int mask,
 	if (card->shutdown)
 		return;
 	read_lock_irqsave(&card->ctl_files_rwlock, flags);
-#if IS_ENABLED(CONFIG_SND_MIXER_OSS)
+//#if (IS_ENABLED(CONFIG_SND_MIXER_OSS) || defined(CONFIG_SND_MIXER_OSS))
+#if defined(CONFIG_SND_MIXER_OSS)
 	card->mixer_oss_change_count++;
 #endif
 	list_for_each_entry(ctl, &card->ctl_files, list, struct snd_ctl_file) {
@@ -377,6 +378,93 @@ static int snd_ctl_find_hole(struct snd_card *card, unsigned int count)
 	return 0;
 }
 
+/* check whether the given id is contained in the given kctl */
+static bool elem_id_matches(const struct snd_kcontrol *kctl,
+			    const struct snd_ctl_elem_id *id)
+{
+	return kctl->id.iface == id->iface &&
+		kctl->id.device == id->device &&
+		kctl->id.subdevice == id->subdevice &&
+		!strncmp(kctl->id.name, id->name, sizeof(kctl->id.name)) &&
+		kctl->id.index <= id->index &&
+		kctl->id.index + kctl->count > id->index;
+}
+
+#ifdef CONFIG_SND_CTL_FAST_LOOKUP
+/* Compute a hash key for the corresponding ctl id
+ * It's for the name lookup, hence the numid is excluded.
+ * The hash key is bound in LONG_MAX to be used for Xarray key.
+ */
+#define MULTIPLIER	37
+static unsigned long get_ctl_id_hash(const struct snd_ctl_elem_id *id)
+{
+	int i;
+	unsigned long h;
+
+	h = id->iface;
+	h = MULTIPLIER * h + id->device;
+	h = MULTIPLIER * h + id->subdevice;
+	for (i = 0; i < SNDRV_CTL_ELEM_ID_NAME_MAXLEN && id->name[i]; i++)
+		h = MULTIPLIER * h + id->name[i];
+	h = MULTIPLIER * h + id->index;
+	h &= LONG_MAX;
+	return h;
+}
+
+/* add hash entries to numid and ctl xarray tables */
+static void add_hash_entries(struct snd_card *card,
+			     struct snd_kcontrol *kcontrol)
+{
+	struct snd_ctl_elem_id id = kcontrol->id;
+	int i;
+
+	xa_store_range(&card->ctl_numids, kcontrol->id.numid,
+		       kcontrol->id.numid + kcontrol->count - 1,
+		       kcontrol, GFP_KERNEL);
+
+	for (i = 0; i < kcontrol->count; i++) {
+		id.index = kcontrol->id.index + i;
+		if (xa_insert(&card->ctl_hash, get_ctl_id_hash(&id),
+			      kcontrol, GFP_KERNEL)) {
+			/* skip hash for this entry, noting we had collision */
+			card->ctl_hash_collision = true;
+			dev_dbg(card->dev, "ctl_hash collision %d:%s:%d\n",
+				id.iface, id.name, id.index);
+		}
+	}
+}
+
+/* remove hash entries that have been added */
+static void remove_hash_entries(struct snd_card *card,
+				struct snd_kcontrol *kcontrol)
+{
+	struct snd_ctl_elem_id id = kcontrol->id;
+	struct snd_kcontrol *matched;
+	unsigned long h;
+	int i;
+
+	for (i = 0; i < kcontrol->count; i++) {
+		xa_erase(&card->ctl_numids, id.numid);
+		h = get_ctl_id_hash(&id);
+		matched = xa_load(&card->ctl_hash, h);
+		if (matched && (matched == kcontrol ||
+				elem_id_matches(matched, &id)))
+			xa_erase(&card->ctl_hash, h);
+		id.index++;
+		id.numid++;
+	}
+}
+#else /* CONFIG_SND_CTL_FAST_LOOKUP */
+static inline void add_hash_entries(struct snd_card *card,
+				    struct snd_kcontrol *kcontrol)
+{
+}
+static inline void remove_hash_entries(struct snd_card *card,
+				       struct snd_kcontrol *kcontrol)
+{
+}
+#endif /* CONFIG_SND_CTL_FAST_LOOKUP */
+
 enum snd_ctl_add_mode {
 	CTL_ADD_EXCLUSIVE, CTL_REPLACE, CTL_ADD_ON_REPLACE,
 };
@@ -420,6 +508,8 @@ static int __snd_ctl_add_replace(struct snd_card *card,
 	card->controls_count += kcontrol->count;
 	kcontrol->id.numid = card->last_numid + 1;
 	card->last_numid += kcontrol->count;
+
+	add_hash_entries(card, kcontrol);
 
 	for (idx = 0; idx < kcontrol->count; idx++)
 		snd_ctl_notify_one(card, SNDRV_CTL_EVENT_MASK_ADD, kcontrol, idx);
@@ -492,6 +582,26 @@ int snd_ctl_replace(struct snd_card *card, struct snd_kcontrol *kcontrol,
 }
 EXPORT_SYMBOL(snd_ctl_replace);
 
+static int __snd_ctl_remove(struct snd_card *card,
+			    struct snd_kcontrol *kcontrol,
+			    bool remove_hash)
+{
+	unsigned int idx;
+
+	if (snd_BUG_ON(!card || !kcontrol))
+		return -EINVAL;
+	list_del(&kcontrol->list);
+
+	if (remove_hash)
+		remove_hash_entries(card, kcontrol);
+
+	card->controls_count -= kcontrol->count;
+	for (idx = 0; idx < kcontrol->count; idx++)
+		snd_ctl_notify_one(card, SNDRV_CTL_EVENT_MASK_REMOVE, kcontrol, idx);
+	snd_ctl_free_one(kcontrol);
+	return 0;
+}
+
 /**
  * snd_ctl_remove - remove the control from the card and release it
  * @card: the card instance
@@ -505,16 +615,7 @@ EXPORT_SYMBOL(snd_ctl_replace);
  */
 int snd_ctl_remove(struct snd_card *card, struct snd_kcontrol *kcontrol)
 {
-	unsigned int idx;
-
-	if (snd_BUG_ON(!card || !kcontrol))
-		return -EINVAL;
-	list_del(&kcontrol->list);
-	card->controls_count -= kcontrol->count;
-	for (idx = 0; idx < kcontrol->count; idx++)
-		snd_ctl_notify_one(card, SNDRV_CTL_EVENT_MASK_REMOVE, kcontrol, idx);
-	snd_ctl_free_one(kcontrol);
-	return 0;
+	return __snd_ctl_remove(card, kcontrol, true);
 }
 EXPORT_SYMBOL(snd_ctl_remove);
 
@@ -655,13 +756,29 @@ int snd_ctl_rename_id(struct snd_card *card, struct snd_ctl_elem_id *src_id,
 		up_write(&card->controls_rwsem);
 		return -ENOENT;
 	}
+	remove_hash_entries(card, kctl);
 	kctl->id = *dst_id;
 	kctl->id.numid = card->last_numid + 1;
 	card->last_numid += kctl->count;
+	add_hash_entries(card, kctl);
 	up_write(&card->controls_rwsem);
 	return 0;
 }
 EXPORT_SYMBOL(snd_ctl_rename_id);
+
+#ifndef CONFIG_SND_CTL_FAST_LOOKUP
+static struct snd_kcontrol *
+snd_ctl_find_numid_slow(struct snd_card *card, unsigned int numid)
+{
+	struct snd_kcontrol *kctl;
+
+	list_for_each_entry(kctl, &card->controls, list, struct snd_kcontrol) {
+		if (kctl->id.numid <= numid && kctl->id.numid + kctl->count > numid)
+			return kctl;
+	}
+	return NULL;
+}
+#endif /* !CONFIG_SND_CTL_FAST_LOOKUP */
 
 /**
  * snd_ctl_find_numid - find the control instance with the given number-id
@@ -678,15 +795,13 @@ EXPORT_SYMBOL(snd_ctl_rename_id);
  */
 struct snd_kcontrol *snd_ctl_find_numid(struct snd_card *card, unsigned int numid)
 {
-	struct snd_kcontrol *kctl;
-
 	if (snd_BUG_ON(!card || !numid))
 		return NULL;
-	list_for_each_entry(kctl, &card->controls, list, struct snd_kcontrol) {
-		if (kctl->id.numid <= numid && kctl->id.numid + kctl->count > numid)
-			return kctl;
-	}
-	return NULL;
+#ifdef CONFIG_SND_CTL_FAST_LOOKUP
+	return xa_load(&card->ctl_numids, numid);
+#else
+	return snd_ctl_find_numid_slow(card, numid);
+#endif
 }
 EXPORT_SYMBOL(snd_ctl_find_numid);
 
@@ -712,21 +827,17 @@ struct snd_kcontrol *snd_ctl_find_id(struct snd_card *card,
 		return NULL;
 	if (id->numid != 0)
 		return snd_ctl_find_numid(card, id->numid);
-	list_for_each_entry(kctl, &card->controls, list, struct snd_kcontrol) {
-		if (kctl->id.iface != id->iface)
-			continue;
-		if (kctl->id.device != id->device)
-			continue;
-		if (kctl->id.subdevice != id->subdevice)
-			continue;
-		if (strncmp(kctl->id.name, id->name, sizeof(kctl->id.name)))
-			continue;
-		if (kctl->id.index > id->index)
-			continue;
-		if (kctl->id.index + kctl->count <= id->index)
-			continue;
+#ifdef CONFIG_SND_CTL_FAST_LOOKUP
+	kctl = xa_load(&card->ctl_hash, get_ctl_id_hash(id));
+	if (kctl && elem_id_matches(kctl, id))
 		return kctl;
-	}
+	if (!card->ctl_hash_collision)
+		return NULL; /* we can rely on only hash table */
+#endif
+	/* no matching in hash table - try all as the last resort */
+	list_for_each_entry(kctl, &card->controls, list, struct snd_kcontrol)
+		if (elem_id_matches(kctl, id))
+			return kctl;
 	return NULL;
 }
 EXPORT_SYMBOL(snd_ctl_find_id);
@@ -868,7 +979,6 @@ static const unsigned int value_sizes[] = {
 	[SNDRV_CTL_ELEM_TYPE_INTEGER64] = sizeof(long long),
 };
 
-#ifdef CONFIG_SND_CTL_VALIDATION
 /* fill the remaining snd_ctl_elem_value data with the given pattern */
 static void fill_remaining_elem_value(struct snd_ctl_elem_value *control,
 				      struct snd_ctl_elem_info *info,
@@ -885,7 +995,7 @@ static void fill_remaining_elem_value(struct snd_ctl_elem_value *control,
 static int sanity_check_int_value(struct snd_card *card,
 				  const struct snd_ctl_elem_value *control,
 				  const struct snd_ctl_elem_info *info,
-				  int i)
+				  int i, bool print_error)
 {
 	long long lval, lmin, lmax, lstep;
 	u64 rem;
@@ -919,23 +1029,52 @@ static int sanity_check_int_value(struct snd_card *card,
 	}
 
 	if (lval < lmin || lval > lmax) {
-		dev_err(card->dev,
-			"control %i:%i:%i:%s:%i: value out of range %lld (%lld/%lld) at count %i\n",
-			control->id.iface, control->id.device,
-			control->id.subdevice, control->id.name,
-			control->id.index, lval, lmin, lmax, i);
+		if (print_error)
+			dev_err(card->dev,
+				"control %i:%i:%i:%s:%i: value out of range %lld (%lld/%lld) at count %i\n",
+				control->id.iface, control->id.device,
+				control->id.subdevice, control->id.name,
+				control->id.index, lval, lmin, lmax, i);
 		return -EINVAL;
 	}
 	if (lstep) {
 		div64_u64_rem(lval, lstep, &rem);
 		if (rem) {
-			dev_err(card->dev,
-				"control %i:%i:%i:%s:%i: unaligned value %lld (step %lld) at count %i\n",
-				control->id.iface, control->id.device,
-				control->id.subdevice, control->id.name,
-				control->id.index, lval, lstep, i);
+			if (print_error)
+				dev_err(card->dev,
+					"control %i:%i:%i:%s:%i: unaligned value %lld (step %lld) at count %i\n",
+					control->id.iface, control->id.device,
+					control->id.subdevice, control->id.name,
+					control->id.index, lval, lstep, i);
 			return -EINVAL;
 		}
+	}
+
+	return 0;
+}
+
+/* check whether the all input values are valid for the given elem value */
+static int sanity_check_input_values(struct snd_card *card,
+				     const struct snd_ctl_elem_value *control,
+				     const struct snd_ctl_elem_info *info,
+				     bool print_error)
+{
+	int i, ret;
+
+	switch (info->type) {
+	case SNDRV_CTL_ELEM_TYPE_BOOLEAN:
+	case SNDRV_CTL_ELEM_TYPE_INTEGER:
+	case SNDRV_CTL_ELEM_TYPE_INTEGER64:
+	case SNDRV_CTL_ELEM_TYPE_ENUMERATED:
+		for (i = 0; i < info->count; i++) {
+			ret = sanity_check_int_value(card, control, info, i,
+						     print_error);
+			if (ret < 0)
+				return ret;
+		}
+		break;
+	default:
+		break;
 	}
 
 	return 0;
@@ -948,23 +1087,12 @@ static int sanity_check_elem_value(struct snd_card *card,
 				   u32 pattern)
 {
 	size_t offset;
-	int i, ret = 0;
+	int ret;
 	u32 *p;
 
-	switch (info->type) {
-	case SNDRV_CTL_ELEM_TYPE_BOOLEAN:
-	case SNDRV_CTL_ELEM_TYPE_INTEGER:
-	case SNDRV_CTL_ELEM_TYPE_INTEGER64:
-	case SNDRV_CTL_ELEM_TYPE_ENUMERATED:
-		for (i = 0; i < info->count; i++) {
-			ret = sanity_check_int_value(card, control, info, i);
-			if (ret < 0)
-				return ret;
-		}
-		break;
-	default:
-		break;
-	}
+	ret = sanity_check_input_values(card, control, info, true);
+	if (ret < 0)
+		return ret;
 
 	/* check whether the remaining area kept untouched */
 	offset = value_sizes[info->type] * info->count;
@@ -980,21 +1108,6 @@ static int sanity_check_elem_value(struct snd_card *card,
 
 	return ret;
 }
-#else
-static inline void fill_remaining_elem_value(struct snd_ctl_elem_value *control,
-					     struct snd_ctl_elem_info *info,
-					     u32 pattern)
-{
-}
-
-static inline int sanity_check_elem_value(struct snd_card *card,
-					  struct snd_ctl_elem_value *control,
-					  struct snd_ctl_elem_info *info,
-					  u32 pattern)
-{
-	return 0;
-}
-#endif
 
 static int __snd_ctl_elem_info(struct snd_card *card,
 			       struct snd_kcontrol *kctl,
@@ -1090,7 +1203,7 @@ static int snd_ctl_elem_read(struct snd_card *card,
 
 	snd_ctl_build_ioff(&control->id, kctl, index_offset);
 
-#ifdef CONFIG_SND_CTL_VALIDATION
+#ifdef CONFIG_SND_CTL_DEBUG
 	/* info is needed only for validation */
 	memset(&info, 0, sizeof(info));
 	info.id = control->id;
@@ -1167,6 +1280,21 @@ static int snd_ctl_elem_write(struct snd_card *card, struct snd_ctl_file *file,
 
 	snd_ctl_build_ioff(&control->id, kctl, index_offset);
 	result = snd_power_ref_and_wait(card);
+	/* validate input values */
+#ifndef TARGET_OS2
+	if ((IS_ENABLED(CONFIG_SND_CTL_INPUT_VALIDATION) || defined(CONFIG_SND_CTL_INPUT_VALIDATION)) && !result) {
+#else
+	if (!result) {
+#endif
+		struct snd_ctl_elem_info info;
+
+		memset(&info, 0, sizeof(info));
+		info.id = control->id;
+		result = __snd_ctl_elem_info(card, kctl, &info, NULL);
+		if (!result)
+			result = sanity_check_input_values(card, control, &info,
+							   false);
+	}
 	if (!result)
 		result = kctl->put(kctl, control);
 	snd_power_unref(card);
@@ -1943,6 +2071,8 @@ static int _snd_ctl_register_ioctl(snd_kctl_ioctl_func_t fcn, struct list_head *
  * @fcn: ioctl callback function
  *
  * called from each device manager like pcm.c, hwdep.c, etc.
+ *
+ * Return: zero if successful, or a negative error code
  */
 int snd_ctl_register_ioctl(snd_kctl_ioctl_func_t fcn)
 {
@@ -1955,6 +2085,8 @@ EXPORT_SYMBOL(snd_ctl_register_ioctl);
  * snd_ctl_register_ioctl_compat - register the device-specific 32bit compat
  * control-ioctls
  * @fcn: ioctl callback function
+ *
+ * Return: zero if successful, or a negative error code
  */
 int snd_ctl_register_ioctl_compat(snd_kctl_ioctl_func_t fcn)
 {
@@ -1990,6 +2122,8 @@ static int _snd_ctl_unregister_ioctl(snd_kctl_ioctl_func_t fcn,
 /**
  * snd_ctl_unregister_ioctl - de-register the device-specific control-ioctls
  * @fcn: ioctl callback function to unregister
+ *
+ * Return: zero if successful, or a negative error code
  */
 int snd_ctl_unregister_ioctl(snd_kctl_ioctl_func_t fcn)
 {
@@ -2002,6 +2136,8 @@ EXPORT_SYMBOL(snd_ctl_unregister_ioctl);
  * snd_ctl_unregister_ioctl_compat - de-register the device-specific compat
  * 32bit control-ioctls
  * @fcn: ioctl callback function to unregister
+ *
+ * Return: zero if successful, or a negative error code
  */
 int snd_ctl_unregister_ioctl_compat(snd_kctl_ioctl_func_t fcn)
 {
@@ -2057,7 +2193,7 @@ EXPORT_SYMBOL_GPL(snd_ctl_get_preferred_subdevice);
  * snd_ctl_request_layer - request to use the layer
  * @module_name: Name of the kernel module (NULL == build-in)
  *
- * Return an error code when the module cannot be loaded.
+ * Return: zero if successful, or an error code when the module cannot be loaded
  */
 int snd_ctl_request_layer(const char *module_name)
 {
@@ -2208,8 +2344,13 @@ static int snd_ctl_dev_free(struct snd_device *device)
 	down_write(&card->controls_rwsem);
 	while (!list_empty(&card->controls)) {
 		control = snd_kcontrol(card->controls.next);
-		snd_ctl_remove(card, control);
+		__snd_ctl_remove(card, control, false);
 	}
+
+#ifdef CONFIG_SND_CTL_FAST_LOOKUP
+	xa_destroy(&card->ctl_numids);
+	xa_destroy(&card->ctl_hash);
+#endif
 	up_write(&card->controls_rwsem);
 	put_device(&card->ctl_dev);
 	return 0;
@@ -2254,6 +2395,8 @@ int snd_ctl_create(struct snd_card *card)
  *
  * This is a function that can be used as info callback for a standard
  * boolean control with a single mono channel.
+ *
+ * Return: Zero (always successful)
  */
 int snd_ctl_boolean_mono_info(struct snd_kcontrol *kcontrol,
 			      struct snd_ctl_elem_info *uinfo)
@@ -2274,6 +2417,8 @@ EXPORT_SYMBOL(snd_ctl_boolean_mono_info);
  *
  * This is a function that can be used as info callback for a standard
  * boolean control with stereo two channels.
+ *
+ * Return: Zero (always successful)
  */
 int snd_ctl_boolean_stereo_info(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_info *uinfo)
@@ -2297,7 +2442,7 @@ EXPORT_SYMBOL(snd_ctl_boolean_stereo_info);
  * If the control's accessibility is not the default (readable and writable),
  * the caller has to fill @info->access.
  *
- * Return: Zero.
+ * Return: Zero (always successful)
  */
 int snd_ctl_enum_info(struct snd_ctl_elem_info *info, unsigned int channels,
 		      unsigned int items, const char *const names[])
