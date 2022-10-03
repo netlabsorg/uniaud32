@@ -22,6 +22,7 @@
 #define CONFIG_PCI
 #define CONFIG_PM
 #define CONFIG_PM_SLEEP
+#define CONFIG_SND_CTL_INPUT_VALIDATION 0
 #ifdef DEBUG
 #define CONFIG_SND_DEBUG_DETECT
 #endif

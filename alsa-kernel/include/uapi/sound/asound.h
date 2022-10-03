@@ -1149,7 +1149,7 @@ struct snd_ctl_tlv {
 	unsigned int numid;	/* control element numeric identification */
 	unsigned int length;	/* in bytes aligned to 4 */
 #ifndef TARGET_OS2
-	unsigned int tlv[0];	/* first TLV */
+	unsigned int tlv[];	/* first TLV */
 #else
 	unsigned int tlv[1];	/* first TLV */
 #endif
