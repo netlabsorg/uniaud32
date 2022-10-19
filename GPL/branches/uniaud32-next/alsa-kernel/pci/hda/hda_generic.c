@@ -144,6 +144,7 @@ static void parse_user_hints(struct hda_codec *codec)
 	val = snd_hda_get_bool_hint(codec, "auto_mute");
 	if (val >= 0)
 		spec->suppress_auto_mute = !val;
+
 	val = snd_hda_get_bool_hint(codec, "auto_mic");
 	if (val >= 0)
 		spec->suppress_auto_mic = !val;
