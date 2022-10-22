@@ -220,29 +220,18 @@ static int remove_nodes(struct device *dev,
 	return cnt;
 }
 
-static int release_nodes(struct device *dev, struct list_head *first,
-			 struct list_head *end, unsigned long flags)
+static void release_nodes(struct device *dev, struct list_head *todo)
 {
-//	LIST_HEAD(todo);
-	struct list_head todo;
-
-	int cnt;
 	struct devres *dr, *tmp;
-
-	cnt = remove_nodes(dev, first, end, &todo);
-
-	spin_unlock_irqrestore(&dev->devres_lock, flags);
 
 	/* Release.  Note that both devres and devres_group are
 	 * handled as devres in the following loop.  This is safe.
 	 */
-	list_for_each_entry_safe_reverse(dr, tmp, &todo, node.entry, struct devres) {
+	list_for_each_entry_safe_reverse(dr, tmp, todo, node.entry, struct devres) {
 		devres_log(dev, &dr->node, "REL");
 		dr->node.release(dev, dr->data);
 		kfree(dr);
 	}
-
-	return cnt;
 }
 
 /**
@@ -255,14 +244,128 @@ static int release_nodes(struct device *dev, struct list_head *first,
 int devres_release_all(struct device *dev)
 {
 	unsigned long flags;
+	struct list_head todo;
+	int cnt;
 
 	/* Looks like an uninitialized device structure */
 	if (WARN_ON(dev->devres_head.next == NULL))
 		return -ENODEV;
+
+	/* Nothing to release if list is empty */
+	if (list_empty(&dev->devres_head))
+		return 0;
+
 	spin_lock_irqsave(&dev->devres_lock, flags);
-	return release_nodes(dev, dev->devres_head.next, &dev->devres_head,
-			     flags);
+	cnt = remove_nodes(dev, dev->devres_head.next, &dev->devres_head, &todo);
+	spin_unlock_irqrestore(&dev->devres_lock, flags);
+
+	release_nodes(dev, &todo);
+	return cnt;
 }
+
+/**
+ * devres_open_group - Open a new devres group
+ * @dev: Device to open devres group for
+ * @id: Separator ID
+ * @gfp: Allocation flags
+ *
+ * Open a new devres group for @dev with @id.  For @id, using a
+ * pointer to an object which won't be used for another group is
+ * recommended.  If @id is NULL, address-wise unique ID is created.
+ *
+ * RETURNS:
+ * ID of the new group, NULL on failure.
+ */
+void * devres_open_group(struct device *dev, void *id, gfp_t gfp)
+{
+	struct devres_group *grp;
+	unsigned long flags;
+
+	grp = kmalloc(sizeof(*grp), gfp);
+	if (unlikely(!grp))
+		return NULL;
+
+	grp->node[0].release = &group_open_release;
+	grp->node[1].release = &group_close_release;
+	INIT_LIST_HEAD(&grp->node[0].entry);
+	INIT_LIST_HEAD(&grp->node[1].entry);
+	set_node_dbginfo(&grp->node[0], "grp<", 0);
+	set_node_dbginfo(&grp->node[1], "grp>", 0);
+	grp->id = grp;
+	if (id)
+		grp->id = id;
+
+	spin_lock_irqsave(&dev->devres_lock, flags);
+	add_dr(dev, &grp->node[0]);
+	spin_unlock_irqrestore(&dev->devres_lock, flags);
+	return grp->id;
+}
+EXPORT_SYMBOL_GPL(devres_open_group);
+
+/* Find devres group with ID @id.  If @id is NULL, look for the latest. */
+static struct devres_group * find_group(struct device *dev, void *id)
+{
+	struct devres_node *node;
+
+	list_for_each_entry_reverse(node, &dev->devres_head, entry, struct devres_node) {
+		struct devres_group *grp;
+
+		if (node->release != &group_open_release)
+			continue;
+
+		grp = container_of(node, struct devres_group, node[0]);
+
+		if (id) {
+			if (grp->id == id)
+				return grp;
+		} else if (list_empty(&grp->node[1].entry))
+			return grp;
+	}
+
+	return NULL;
+}
+
+/**
+ * devres_release_group - Release resources in a devres group
+ * @dev: Device to release group for
+ * @id: ID of target group, can be NULL
+ *
+ * Release all resources in the group identified by @id.  If @id is
+ * NULL, the latest open group is selected.  The selected group and
+ * groups properly nested inside the selected group are removed.
+ *
+ * RETURNS:
+ * The number of released non-group resources.
+ */
+int devres_release_group(struct device *dev, void *id)
+{
+	struct devres_group *grp;
+	unsigned long flags;
+	struct list_head todo;
+	int cnt = 0;
+
+	spin_lock_irqsave(&dev->devres_lock, flags);
+
+	grp = find_group(dev, id);
+	if (grp) {
+		struct list_head *first = &grp->node[0].entry;
+		struct list_head *end = &dev->devres_head;
+
+		if (!list_empty(&grp->node[1].entry))
+			end = grp->node[1].entry.next;
+
+		cnt = remove_nodes(dev, first, end, &todo);
+		spin_unlock_irqrestore(&dev->devres_lock, flags);
+
+		release_nodes(dev, &todo);
+	} else {
+		WARN_ON(1);
+		spin_unlock_irqrestore(&dev->devres_lock, flags);
+	}
+
+	return cnt;
+}
+EXPORT_SYMBOL_GPL(devres_release_group);
 
 static struct devres *find_dr(struct device *dev, dr_release_t release,
 			      dr_match_t match, void *match_data)
