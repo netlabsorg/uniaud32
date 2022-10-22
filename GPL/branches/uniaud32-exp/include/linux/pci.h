@@ -791,5 +791,6 @@ void pci_intx(struct pci_dev *pdev, int enable);
 int __must_check pci_request_region(struct pci_dev *, int, char *);
 void pci_release_region(struct pci_dev *, int);
 void __iomem * const *pcim_iomap_table(struct pci_dev *pdev);
+#define for_each_pci_dev(d) while ((d = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, d)) != NULL)
 
 #endif /* LINUX_PCI_H */

@@ -299,6 +299,12 @@ extern void devres_free(void *res);
 extern void *devres_find(struct device *dev, dr_release_t release,
 			 dr_match_t match, void *match_data);
 
+/* devres group */
+void * __must_check devres_open_group(struct device *dev, void *id, gfp_t gfp);
+void devres_close_group(struct device *dev, void *id);
+void devres_remove_group(struct device *dev, void *id);
+int devres_release_group(struct device *dev, void *id);
+
 /* debugging and troubleshooting/diagnostic helpers. */
 extern const char *dev_driver_string(const struct device *dev);
 void *devm_kmalloc(struct device *dev, size_t size, gfp_t gfp);

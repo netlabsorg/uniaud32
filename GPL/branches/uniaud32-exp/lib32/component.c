@@ -184,7 +184,7 @@ static int find_components(struct aggregate_device *adev)
 		struct component_match_array *mc = &match->compare[i];
 		struct component *c;
 
-		dev_dbg(adev->parent, "Looking for component %zu\n", i);
+		dev_dbg(adev->parent, "Looking for component %lu\n", i);
 
 		if (match->compare[i].component)
 			continue;
@@ -242,18 +242,15 @@ static int try_to_bring_up_aggregate_device(struct aggregate_device *adev,
 		return 0;
 	}
 
-#ifndef TARGET_OS2
 	if (!devres_open_group(adev->parent, adev, GFP_KERNEL))
 		return -ENOMEM;
-#endif
+
 	/* Found all components */
 	ret = adev->ops->bind(adev->parent);
 	if (ret < 0) {
-#ifndef TARGET_OS2
 		devres_release_group(adev->parent, NULL);
 		if (ret != -EPROBE_DEFER)
 			dev_info(adev->parent, "adev bind failed: %d\n", ret);
-#endif
 		return ret;
 	}
 
@@ -625,10 +622,10 @@ static int component_bind(struct component *component, struct aggregate_device *
 	 * This allows us to roll-back a failed component without
 	 * affecting anything else.
 	 */
-#ifndef TARGET_OS2
+
 	if (!devres_open_group(adev->parent, NULL, GFP_KERNEL))
 		return -ENOMEM;
-#endif
+
 	/*
 	 * Also open a group for the device itself: this allows us
 	 * to release the resources claimed against the sub-device
