@@ -12,6 +12,9 @@
 #include <linux/slab.h>
 #include <linux/mm.h>
 #include <linux/dma-mapping.h>
+#ifndef TARGET_OS2
+#include <linux/dma-map-ops.h>
+#endif
 #include <linux/genalloc.h>
 #include <linux/highmem.h>
 #include <linux/vmalloc.h>
