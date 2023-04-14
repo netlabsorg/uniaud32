@@ -1,0 +1,7 @@
+*.rej
+*.orig
+*.log
+*.obj
+*.sy*
+*.map
+*.err
