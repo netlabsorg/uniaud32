@@ -90,6 +90,7 @@ cardcalls_t cardcalls[CARDS_NUM] = {
 	{ CARD_ATIIXP,	 &name_module_init(atiixp_driver_init),		&name_module_exit(atiixp_driver_exit)	  },
 	{ CARD_AUDIGYLS, &name_module_init(ca0106_driver_init),		&name_module_exit(ca0106_driver_exit)	  },
 	{ CARD_BT87X,	 &name_module_init(alsa_card_bt87x_init),	&name_module_exit(alsa_card_bt87x_exit)	  },
+	{ CARD_OXYGEN,	 &name_module_init(oxygen_driver_init),		&name_module_exit(oxygen_driver_exit)	  },
 };
 
 int 	   nrCardsDetected = 0;

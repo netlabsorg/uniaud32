@@ -50,8 +50,9 @@
 #define CARD_VORTEX     20 // unsupported
 #define CARD_CS5535	21
 #define CARD_ENSONIQ1   22
+#define CARD_OXYGEN   23
 
-#define CARDS_NUM       23
+#define CARDS_NUM       24
 
 #define CARD_STRING_SBLIVE	"SBLIVE"
 #define CARD_STRING_CMEDIA	"CMEDIA"
@@ -75,6 +76,7 @@
 #define CARD_STRING_BT87X       "BT87X"
 #define CARD_STRING_AZX         "AZX"
 #define CARD_STRING_CS5535	"CS5535"
+#define CARD_STRING_OXYGEN	"OXYGEN"
 
 #define CARD_MAX_LEN            16
 

@@ -1,0 +1,8 @@
+-+obj\Release\oxygen_io.obj
+-+obj\Release\oxygen_lib.obj
+-+obj\Release\oxygen_mixer.obj
+-+obj\Release\oxygen_pcm.obj
+-+obj\Release\oxygen.obj
+-+obj\Release\xonar_dg_mixer.obj
+-+obj\Release\xonar_dg.obj
+-+obj\Release\se6x.obj

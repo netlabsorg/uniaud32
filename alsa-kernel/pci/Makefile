@@ -74,6 +74,10 @@ subdirs: .SYMBOLIC
     @cd nm256
     @wmake $(WMAKEOPTS)
     @cd ..
+    @echo BUILDING oxygen
+    @cd oxygen
+    @wmake $(WMAKEOPTS)
+    @cd ..
 #    @echo BUILDING rme9652
 #    @cd rme9652
 #    @wmake $(WMAKEOPTS)
