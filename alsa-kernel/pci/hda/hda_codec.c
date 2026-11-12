@@ -711,11 +711,22 @@ get_hda_cvt_setup(struct hda_codec *codec, hda_nid_t nid)
 /*
  * PCM device
  */
+static void release_pcm(struct kref *kref)
+{
+	struct hda_pcm *pcm = container_of(kref, struct hda_pcm, kref);
+#ifndef TARGET_OS2
+/* don't do this on OS/2 - results in the device being free'd and can't be re-opened */
+	if (pcm->pcm)
+		snd_device_free(pcm->codec->card, pcm->pcm);
+#endif
+	clear_bit(pcm->device, pcm->codec->bus->pcm_dev_bits);
+	kfree(pcm->name);
+	kfree(pcm);
+}
 
 void snd_hda_codec_pcm_put(struct hda_pcm *pcm)
 {
-	if (refcount_dec_and_test(&pcm->codec->pcm_ref))
-		wake_up(&pcm->codec->remove_sleep);
+	kref_put(&pcm->kref, release_pcm);
 }
 EXPORT_SYMBOL_GPL(snd_hda_codec_pcm_put);
 
@@ -730,6 +741,7 @@ struct hda_pcm *snd_hda_codec_pcm_new(struct hda_codec *codec,
 		return NULL;
 
 	pcm->codec = codec;
+	kref_init(&pcm->kref);
 	va_start(args, fmt);
 	pcm->name = kvasprintf(GFP_KERNEL, fmt, args);
 	va_end(args);
@@ -739,7 +751,6 @@ struct hda_pcm *snd_hda_codec_pcm_new(struct hda_codec *codec,
 	}
 
 	list_add_tail(&pcm->list, &codec->pcm_list_head);
-	refcount_inc(&codec->pcm_ref);
 	return pcm;
 }
 EXPORT_SYMBOL_GPL(snd_hda_codec_pcm_new);
@@ -747,34 +758,15 @@ EXPORT_SYMBOL_GPL(snd_hda_codec_pcm_new);
 /*
  * codec destructor
  */
-void snd_hda_codec_disconnect_pcms(struct hda_codec *codec)
-{
-	struct hda_pcm *pcm;
-
-	list_for_each_entry(pcm, &codec->pcm_list_head, list, struct hda_pcm) {
-		if (pcm->disconnected)
-			continue;
-		if (pcm->pcm)
-			snd_device_disconnect(codec->card, pcm->pcm);
-		snd_hda_codec_pcm_put(pcm);
-		pcm->disconnected = 1;
-	}
-}
-
 static void codec_release_pcms(struct hda_codec *codec)
 {
 	struct hda_pcm *pcm, *n;
 
 	list_for_each_entry_safe(pcm, n, &codec->pcm_list_head, list, struct hda_pcm) {
-		list_del(&pcm->list);
-#ifndef TARGET_OS2
-		/* don't do this on OS/2 - results in the device being free'd and can't be re-opened */
+		list_del_init(&pcm->list);
 		if (pcm->pcm)
-			snd_device_free(pcm->codec->card, pcm->pcm);
-#endif
-		clear_bit(pcm->device, pcm->codec->bus->pcm_dev_bits);
-		kfree(pcm->name);
-		kfree(pcm);
+			snd_device_disconnect(codec->card, pcm->pcm);
+		snd_hda_codec_pcm_put(pcm);
 	}
 }
 
@@ -787,7 +779,6 @@ void snd_hda_codec_cleanup_for_unbind(struct hda_codec *codec)
 		codec->registered = 0;
 	}
 
-	snd_hda_codec_disconnect_pcms(codec);
 	cancel_delayed_work_sync(&codec->jackpoll_work);
 	if (!codec->in_freeing)
 		snd_hda_ctls_clear(codec);
@@ -810,8 +801,6 @@ void snd_hda_codec_cleanup_for_unbind(struct hda_codec *codec)
 	snd_array_free(&codec->nids);
 	remove_conn_list(codec);
 	snd_hdac_regmap_exit(&codec->core);
-	codec->configured = 0;
-	refcount_set(&codec->pcm_ref, 1); /* reset refcount */
 }
 EXPORT_SYMBOL_GPL(snd_hda_codec_cleanup_for_unbind);
 
@@ -978,8 +967,6 @@ int snd_hda_codec_device_new(struct hda_bus *bus, struct snd_card *card,
 	snd_array_init(&codec->verbs, sizeof(struct hda_verb *), 8);
 	INIT_LIST_HEAD(&codec->conn_list);
 	INIT_LIST_HEAD(&codec->pcm_list_head);
-	refcount_set(&codec->pcm_ref, 1);
-	init_waitqueue_head(&codec->remove_sleep);
 
 	INIT_DELAYED_WORK(&codec->jackpoll_work, hda_jackpoll_work);
 	codec->depop_delay = -1;
@@ -1749,11 +1736,8 @@ void snd_hda_ctls_clear(struct hda_codec *codec)
 {
 	int i;
 	struct hda_nid_item *items = codec->mixers.list;
-
-	down_write(&codec->card->controls_rwsem);
 	for (i = 0; i < codec->mixers.used; i++)
 		snd_ctl_remove(codec->card, items[i].kctl);
-	up_write(&codec->card->controls_rwsem);
 	snd_array_free(&codec->mixers);
 	snd_array_free(&codec->nids);
 }
@@ -3013,22 +2997,6 @@ const struct dev_pm_ops hda_codec_driver_pm = {
 	SET_RUNTIME_PM_OPS(hda_codec_runtime_suspend, hda_codec_runtime_resume,
 			   NULL)
 };
-
-/* suspend the codec at shutdown; called from driver's shutdown callback */
-void snd_hda_codec_shutdown(struct hda_codec *codec)
-{
-	struct hda_pcm *cpcm;
-
-	/* Skip the shutdown if codec is not registered */
-	if (!codec->registered)
-		return;
-
-	list_for_each_entry(cpcm, &codec->pcm_list_head, list, struct hda_pcm)
-		snd_pcm_suspend_all(cpcm->pcm);
-
-	pm_runtime_force_suspend(hda_codec_dev(codec));
-	pm_runtime_disable(hda_codec_dev(codec));
-}
 
 /*
  * add standard channel maps if not specified

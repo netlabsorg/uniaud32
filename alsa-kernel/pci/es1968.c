@@ -2478,8 +2478,7 @@ static int snd_es1968_create_gameport(struct es1968 *chip, int dev)
 	if (!joystick[dev])
 		return -ENODEV;
 
-	r = devm_request_region(&chip->pci->dev, JOYSTICK_ADDR, 8,
-				"ES1968 gameport");
+	r = request_region(JOYSTICK_ADDR, 8, "ES1968 gameport");
 	if (!r)
 		return -EBUSY;
 
@@ -2487,6 +2486,7 @@ static int snd_es1968_create_gameport(struct es1968 *chip, int dev)
 	if (!gp) {
 		dev_err(chip->card->dev,
 			"cannot allocate memory for gameport\n");
+		release_and_free_resource(r);
 		return -ENOMEM;
 	}
 
@@ -2497,6 +2497,7 @@ static int snd_es1968_create_gameport(struct es1968 *chip, int dev)
 	gameport_set_phys(gp, "pci%s/gameport0", pci_name(chip->pci));
 	gameport_set_dev_parent(gp, &chip->pci->dev);
 	gp->io = JOYSTICK_ADDR;
+	gameport_set_port_data(gp, r);
 
 	gameport_register_port(gp);
 
@@ -2506,8 +2507,12 @@ static int snd_es1968_create_gameport(struct es1968 *chip, int dev)
 static void snd_es1968_free_gameport(struct es1968 *chip)
 {
 	if (chip->gameport) {
+		struct resource *r = gameport_get_port_data(chip->gameport);
+
 		gameport_unregister_port(chip->gameport);
 		chip->gameport = NULL;
+
+		release_and_free_resource(r);
 	}
 }
 #else
@@ -2521,7 +2526,7 @@ static int snd_es1968_input_register(struct es1968 *chip)
 	struct input_dev *input_dev;
 	int err;
 
-	input_dev = devm_input_allocate_device(&chip->pci->dev);
+	input_dev = input_allocate_device();
 	if (!input_dev)
 		return -ENOMEM;
 
@@ -2541,8 +2546,10 @@ static int snd_es1968_input_register(struct es1968 *chip)
 	__set_bit(KEY_VOLUMEUP, input_dev->keybit);
 
 	err = input_register_device(input_dev);
-	if (err)
+	if (err) {
+		input_free_device(input_dev);
 		return err;
+	}
 
 	chip->input_dev = input_dev;
 	return 0;
@@ -2626,11 +2633,13 @@ static const struct snd_tea575x_ops snd_es1968_tea_ops = {
 };
 #endif
 
-static void snd_es1968_free(struct snd_card *card)
+static int snd_es1968_free(struct es1968 *chip)
 {
-	struct es1968 *chip = card->private_data;
-
 	cancel_work_sync(&chip->hwvol_work);
+#ifdef CONFIG_SND_ES1968_INPUT
+	if (chip->input_dev)
+		input_unregister_device(chip->input_dev);
+#endif
 
 	if (chip->io_port) {
 		outw(1, chip->io_port + 0x04); /* clear WP interrupts */
@@ -2642,7 +2651,19 @@ static void snd_es1968_free(struct snd_card *card)
 	v4l2_device_unregister(&chip->v4l2_dev);
 #endif
 
+	if (chip->irq >= 0)
+		free_irq(chip->irq, chip);
 	snd_es1968_free_gameport(chip);
+	pci_release_regions(chip->pci);
+	pci_disable_device(chip->pci);
+	kfree(chip);
+	return 0;
+}
+
+static int snd_es1968_dev_free(struct snd_device *device)
+{
+	struct es1968 *chip = device->device_data;
+	return snd_es1968_free(chip);
 }
 
 struct ess_device_list {
@@ -2672,20 +2693,33 @@ static int snd_es1968_create(struct snd_card *card,
 			     int capt_streams,
 			     int chip_type,
 			     int do_pm,
-			     int radio_nr)
+			     int radio_nr,
+			     struct es1968 **chip_ret)
 {
-	struct es1968 *chip = card->private_data;
+	static const struct snd_device_ops ops = {
+		.dev_free =	snd_es1968_dev_free,
+	};
+	struct es1968 *chip;
 	int i, err;
 
+	*chip_ret = NULL;
+
 	/* enable PCI device */
-	err = pcim_enable_device(pci);
+	err = pci_enable_device(pci);
 	if (err < 0)
 		return err;
 	/* check, if we can restrict PCI DMA transfers to 28 bits */
 	if (dma_set_mask_and_coherent(&pci->dev, DMA_BIT_MASK(28))) {
 		dev_err(card->dev,
 			"architecture does not support 28bit PCI busmaster DMA\n");
+		pci_disable_device(pci);
 		return -ENXIO;
+	}
+
+	chip = kzalloc(sizeof(*chip), GFP_KERNEL);
+	if (! chip) {
+		pci_disable_device(pci);
+		return -ENOMEM;
 	}
 
 	/* Set Vars */
@@ -2704,17 +2738,20 @@ static int snd_es1968_create(struct snd_card *card,
 	chip->capture_streams = capt_streams;
 
 	err = pci_request_regions(pci, "ESS Maestro");
-	if (err < 0)
+	if (err < 0) {
+		kfree(chip);
+		pci_disable_device(pci);
 		return err;
+	}
 	chip->io_port = pci_resource_start(pci, 0);
-	if (devm_request_irq(&pci->dev, pci->irq, snd_es1968_interrupt,
-			     IRQF_SHARED, KBUILD_MODNAME, chip)) {
+	if (request_irq(pci->irq, snd_es1968_interrupt, IRQF_SHARED,
+			KBUILD_MODNAME, chip)) {
 		dev_err(card->dev, "unable to grab IRQ %d\n", pci->irq);
+		snd_es1968_free(chip);
 		return -EBUSY;
 	}
 	chip->irq = pci->irq;
 	card->sync_irq = chip->irq;
-	card->private_free = snd_es1968_free;
 	        
 	/* Clear Maestro_map */
 	for (i = 0; i < 32; i++)
@@ -2748,13 +2785,21 @@ static int snd_es1968_create(struct snd_card *card,
 
 	snd_es1968_chip_init(chip);
 
+	err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, chip, &ops);
+	if (err < 0) {
+		snd_es1968_free(chip);
+		return err;
+	}
+
 #ifdef CONFIG_SND_ES1968_RADIO
 	/* don't play with GPIOs on laptops */
 	if (chip->pci->subsystem_vendor != 0x125d)
-		return 0;
+		goto no_radio;
 	err = v4l2_device_register(&pci->dev, &chip->v4l2_dev);
-	if (err < 0)
+	if (err < 0) {
+		snd_es1968_free(chip);
 		return err;
+	}
 	chip->tea.v4l2_dev = &chip->v4l2_dev;
 	chip->tea.private_data = chip;
 	chip->tea.radio_nr = radio_nr;
@@ -2770,15 +2815,19 @@ static int snd_es1968_create(struct snd_card *card,
 			break;
 		}
 	}
+no_radio:
 #endif
+
+	*chip_ret = chip;
+
 	return 0;
 }
 
 
 /*
  */
-static int __snd_es1968_probe(struct pci_dev *pci,
-			      const struct pci_device_id *pci_id)
+static int snd_es1968_probe(struct pci_dev *pci,
+			    const struct pci_device_id *pci_id)
 {
 	static int dev;
 	struct snd_card *card;
@@ -2793,11 +2842,10 @@ static int __snd_es1968_probe(struct pci_dev *pci,
 		return -ENOENT;
 	}
 
-	err = snd_devm_card_new(&pci->dev, index[dev], id[dev], THIS_MODULE,
-				sizeof(*chip), &card);
+	err = snd_card_new(&pci->dev, index[dev], id[dev], THIS_MODULE,
+			   0, &card);
 	if (err < 0)
 		return err;
-	chip = card->private_data;
                 
 	if (total_bufsize[dev] < 128)
 		total_bufsize[dev] = 128;
@@ -2809,9 +2857,13 @@ static int __snd_es1968_probe(struct pci_dev *pci,
 				pcm_substreams_c[dev],
 				pci_id->driver_data,
 				use_pm[dev],
-				radio_nr[dev]);
-	if (err < 0)
+				radio_nr[dev],
+				&chip);
+	if (err < 0) {
+		snd_card_free(card);
 		return err;
+	}
+	card->private_data = chip;
 
 	switch (chip->type) {
 	case TYPE_MAESTRO2E:
@@ -2829,12 +2881,16 @@ static int __snd_es1968_probe(struct pci_dev *pci,
 	}
 
 	err = snd_es1968_pcm(chip, 0);
-	if (err < 0)
+	if (err < 0) {
+		snd_card_free(card);
 		return err;
+	}
 
 	err = snd_es1968_mixer(chip);
-	if (err < 0)
+	if (err < 0) {
+		snd_card_free(card);
 		return err;
+	}
 
 	if (enable_mpu[dev] == 2) {
 		/* check the deny list */
@@ -2877,23 +2933,25 @@ static int __snd_es1968_probe(struct pci_dev *pci,
 		card->shortname, chip->io_port, chip->irq);
 
 	err = snd_card_register(card);
-	if (err < 0)
+	if (err < 0) {
+		snd_card_free(card);
 		return err;
+	}
 	pci_set_drvdata(pci, card);
 	dev++;
 	return 0;
 }
 
-static int snd_es1968_probe(struct pci_dev *pci,
-			    const struct pci_device_id *pci_id)
+static void snd_es1968_remove(struct pci_dev *pci)
 {
-	return snd_card_free_on_error(&pci->dev, __snd_es1968_probe(pci, pci_id));
+	snd_card_free(pci_get_drvdata(pci));
 }
 
 static struct pci_driver es1968_driver = {
 	.name = KBUILD_MODNAME,
 	.id_table = snd_es1968_ids,
 	.probe = snd_es1968_probe,
+	.remove = snd_es1968_remove,
 	.driver = {
 		.pm = ES1968_PM_OPS,
 	},
