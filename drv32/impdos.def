@@ -2,7 +2,9 @@ LIBRARY DOSCALLS
 
 EXPORTS
     DOSCLOSE                  @59
+    DOSBEEP                   @50
     DOSOPEN                   @70
+    DOSREAD                   @137
     _DOSWRITE                 @138
     DosExit                   @234
     DosWrite                  @282

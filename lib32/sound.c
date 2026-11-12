@@ -21,6 +21,7 @@
  *
  */
 
+#define MIXER_EXPERIMENT 1   /* see nrStreams override in OSS32_QueryDevCaps */
 #include <sound/core.h>
 #include <sound/control.h>
 #include <sound/info.h>
@@ -381,6 +382,12 @@ OSSRET OSS32_QueryDevCaps(ULONG deviceid, POSS32_DEVCAPS pDevCaps)
 		}
 		dprintf(("Device name: %s", pDevCaps->szDeviceName));
 		pWaveCaps->nrStreams = pcminfo->subdevices_count;
+#ifdef MIXER_EXPERIMENT
+		/* EXPERIMENT (mixer design, step 'caps only'): advertise 4 playback streams so MMPM admits several
+		 * concurrent streams (uniaud16 gives each 32/nrStreams resource units). No mixing exists yet: the
+		 * 2nd..4th stream will hit the old 'reuse first handle' path in OSS32_WaveOpen. */
+		if (i == 0 && pWaveCaps->nrStreams < 4) pWaveCaps->nrStreams = 4;
+#endif
 
 		//get all hardware parameters
 		_snd_pcm_hw_params_any(params);
@@ -430,6 +437,18 @@ OSSRET OSS32_QueryDevCaps(ULONG deviceid, POSS32_DEVCAPS pDevCaps)
 			}
 		}
 
+#ifdef MIXER_ENABLE
+		/* mixer: uniaud16 must hand us exactly S16 stereo 48 kHz (it converts rate/channels/bits when the
+		 * reported caps are narrower), and up to 4 concurrent playback streams */
+		if (i == 0) {
+			pWaveCaps->ulMinChannels = pWaveCaps->ulMaxChannels = 2;
+			pWaveCaps->ulChanFlags   = OSS32_CAPS_PCM_CHAN_STEREO;
+			pWaveCaps->ulMinRate = pWaveCaps->ulMaxRate = 48000;
+			pWaveCaps->ulRateFlags   = OSS32_CAPS_PCM_RATE_48000;
+			pWaveCaps->ulDataFormats = OSS32_CAPS_PCM_FORMAT_S16_LE;
+			pWaveCaps->nrStreams     = 4;
+		}
+#endif
 		OSS32_WaveClose(streamid);
 		streamid = 0;
 

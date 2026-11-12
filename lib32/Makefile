@@ -18,6 +18,9 @@ CDEFINES += -DIBM_BUILD
 CDEFINES+= -DUSE_MSI
 !endif
 
+# software mixer (see UNIAUD-probe/MIXER-DESIGN.md)
+CDEFINES+= -DMIXER_ENABLE
+
 #===================================================================
 #
 #   List of source files
@@ -25,7 +28,7 @@ CDEFINES+= -DUSE_MSI
 #===================================================================
 FILES = spinlock.obj malloc.obj pci.obj irq.obj ioctl.obj devres.obj &
   memory.obj debug.obj sound.obj soundmixer.obj soundmidi.obj &
-  ossidc.obj semaphore.obj waitqueue.obj misc.obj klist.obj kasprintf.obj &
+  ossidc.obj mixer.obj semaphore.obj waitqueue.obj misc.obj klist.obj kasprintf.obj &
   seq_file.obj strncpy.obj strscpy.obj task.obj rbtree.obj &
   strncmp.obj timer.obj kobject.obj driver.obj drivers_base.obj &
   instropl2.obj instropl3.obj vsprintf.obj bitmap.obj find_next_bit.obj &

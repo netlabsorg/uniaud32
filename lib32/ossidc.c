@@ -193,6 +193,9 @@ OSSRET OSS32_Shutdown(void)
 //******************************************************************************
 int OSS32_ProcessIRQ(void)
 {
+#ifdef MIXER_ENABLE
+	OSS32_MixService();
+#endif
 	return CallOSS16(IDC16_PROCESS, 0, 0);
 }
 

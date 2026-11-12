@@ -58,6 +58,10 @@ OSSRET OSS32IDC(ULONG cmd, PIDC32_PACKET pPacket)
 {
   OSSRET rc;
 
+#ifdef MIXER_ENABLE
+  if (OSS32_MixHandleIDC(cmd, pPacket, &rc)) return rc;
+#endif
+
   switch(cmd)
   {
   case IDC32_OSS32_INIT:

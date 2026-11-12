@@ -47,6 +47,9 @@ MAKEFILE  = Makefile
 CDEFINES = -DIBM_BUILD
 !endif
 
+# software mixer hook in idc.c (see lib32/mixer.c)
+CDEFINES += -DMIXER_ENABLE
+
 #===================================================================
 #
 #   List of source files
@@ -100,7 +103,7 @@ $(LNKFILE): $(MAKEFILE)
 $(OBJDIR)\$(TARGET).sys: $(LNKFILE) $(FILES) $(LIBS)
   @%create $(DEFFILE)
   $(ROOT)\tools\AddToFile.cmd $(DEFFILE),description,BLDLEVEL,$(BLDLVL_VENDOR),$(BLDLVL_VERSION),Universal Audio Driver for OS/2 (c) %Y $(BLDLVL_VENDOR),$(BLDLVL_FIXPACK),$(BLDLVL_ALSA)
-  $(LINK) @$(LNKFILE)
+  -$(LINK) @$(LNKFILE)
   copy $(OBJDIR)\$(TARGET).sys $(ALSA_BIN)
 
 $(OBJDIR)\$(TARGET).sym: $(LIBS)

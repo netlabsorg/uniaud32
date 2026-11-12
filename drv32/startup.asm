@@ -139,6 +139,9 @@ _MESSAGE_STR    db 1024 dup (0)
 _MSG_TABLE16    dw 0	;message length
 		dw OFFSET _MESSAGE_STR	;message far pointer
 		dw SEG    _MESSAGE_STR
+		public _MSG_FLAGS
+_MSG_FLAGS      db 0	;MUST directly follow _MSG_TABLE16 (C code uses msg+6): bit0 = wait for a key, bit1 = beep
+_KEYBUF         db 4 dup (0)
 
 FileName 	db 'ALSAHLP$', 0
 ResMgr          db 'RESMGR$ ',0
@@ -158,6 +161,8 @@ CODE16 segment
         extrn DOSOPEN       : far
         extrn _DOSWRITE     : far
         extrn DOSCLOSE      : far
+        extrn DOSREAD       : far
+        extrn DOSBEEP       : far
 
         ALIGN 2
 help_stub_strategy proc far
@@ -388,6 +393,30 @@ device_init proc near
         call    _DOSWRITE
 
 	pop	eax
+
+	; /W: wait for a key (DosRead on stdin) after the messages were printed
+	test	byte ptr _MSG_FLAGS, 1
+	jz	short @@nowait
+	push	eax
+	push	0000H			; handle 0 = stdin
+	push	ds
+	push	offset _KEYBUF
+	push	0001H
+	push	ss
+	lea	dx, [bp - 2]
+	push	dx
+	call	DOSREAD
+	pop	eax
+@@nowait:
+	; /AA: audible alert
+	test	byte ptr _MSG_FLAGS, 2
+	jz	short @@nobeep
+	push	eax
+	push	1000			; Hz
+	push	120			; ms
+	call	DOSBEEP
+	pop	eax
+@@nobeep:
 
 	pop 	di
 	pop 	si

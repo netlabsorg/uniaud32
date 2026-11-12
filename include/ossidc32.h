@@ -85,6 +85,9 @@ ULONG OSS32_SetFileId(ULONG fileid);
 //Notifies the 16 bits MMPM/2 driver that an irq has occured. This means
 //it has to query the status of all active streams.
 int OSS32_ProcessIRQ();
+void OSS32_MixService(void);
+BOOL OSS32_MixHandleIDC(ULONG cmd, PIDC32_PACKET pPacket, OSSRET *prc);
+BOOL OSS32_MixIsStream(OSSSTREAMID id);
 extern IDC16_HANDLER idc16_PddHandler;
 
 ULONG _cdecl CallPDD16(IDC16_HANDLER pHandler, ULONG cmd, ULONG param1, ULONG param2);

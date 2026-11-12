@@ -40,6 +40,9 @@ extern "C" {
 // True if the /V parameter was specified
 int fVerbose  = FALSE;
 int fDebug    = FALSE;
+int fQuiet    = FALSE;   // /Q  no boot messages at all
+int fWait     = FALSE;   // /W  wait for a key after the boot messages
+int fBeep     = FALSE;   // /AA beep when the driver is loaded
 //int ForceCard = CARD_NONE;
 int iAdapterNumber = -1;
 
@@ -220,6 +223,12 @@ int DoParm(char cParm, char FAR48 *pszOption)
     case 'D':
         fDebug = TRUE;
         break;
+    case 'Q':                     // Quiet option
+        fQuiet = TRUE;
+        break;
+    case 'W':                     // Wait-for-key option
+        fWait = TRUE;
+        break;
     //case 'C':
         //CheckCardName(pszOption);
         //break;
@@ -277,6 +286,12 @@ int DoParm(char cParm, char FAR48 *pszOption)
 int ParseParm(char FAR48 *pszParm, int iLength)
 {
    char ch,ch1=(char) toupper(*pszParm);       // get letter
+
+   // /AA = audible alert (two letters; plain /A<n> is the adapter number)
+   if (iLength == 2 && ch1 == 'A' && toupper(pszParm[1]) == 'A') {
+      fBeep = TRUE;
+      return TRUE;
+   }
 
    if (iLength == 1)                // only a letter?
       return DoParm(ch1,NULL);

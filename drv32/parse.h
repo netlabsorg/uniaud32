@@ -31,6 +31,12 @@ extern "C" {
 // True if the /V parameter was specified
 extern int fVerbose;
 extern int fDebug;
+/* Boot message options, see EDM2 "Suggestion for OS/2 and eComStation Drivers Arguments":
+ * default = only errors are shown; /V verbose; /Q no messages at all; /W wait for a key after the messages;
+ * /AA audible alert (beep) when the driver loaded. */
+extern int fQuiet;
+extern int fWait;
+extern int fBeep;
 
 int GetParms(char FAR48 *pszCmdLine);
 

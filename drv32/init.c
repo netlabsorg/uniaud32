@@ -84,6 +84,8 @@ void DevSaveMessage(char FAR48 *str, int length)
  char FAR48 *str16 = (char FAR48 *)MAKE_FARPTR32(msg->MsgPtr);
  int i;
 
+  if (msg->MsgLength + length >= 1000) return;      /* buffer is 1024 bytes: drop what does not fit */
+
   for(i=0;i<length;i++) {
   str16[msg->MsgLength + i] = str[i];
   }
@@ -147,6 +149,32 @@ static VOID WriteString(const char __far* str, int length)
     return;
 }
 
+/* Boot messages follow the EDM2 "Suggestion for OS/2 and eComStation Drivers Arguments":
+ * one line "UNIAUD32: text"; nothing at all when /Q was given.  By default only errors are shown. */
+static VOID BootMsg(const char *text)
+{
+    int len, n, cut;
+
+    if (fQuiet) return;
+    len = strlen(text);
+    /* wrap at 79 columns: every output line starts with the prefix (10 chars) */
+    while (len > 0)
+    {
+        n = len;
+        if (n > 69)
+        {
+            cut = 69;
+            while (cut > 0 && text[cut] != ' ') cut--;
+            n = cut ? cut : 69;
+        }
+        WriteString("UNIAUD32: ", 10);
+        WriteString(text, n);
+        WriteString("\r\n", 2);
+        text += n; len -= n;
+        if (len > 0 && *text == ' ') { text++; len--; }
+    }
+}
+
 #if 0
 void SaveBuffer(void)
 {
@@ -181,8 +209,7 @@ WORD32 DiscardableInit(REQPACKET __far* rp)
 
   if(LockSegments())
   {
-    WriteString(ERR_ERROR, sizeof(ERR_ERROR)-1);
-    WriteString(ERR_LOCK, sizeof(ERR_LOCK)-1);
+    BootMsg("Universal Audio Driver could not be loaded. Unable to lock the 32 bit data & code segments.");
     return RPDONE | RPERR_BADCOMMAND;
   }
 
@@ -214,12 +241,17 @@ WORD32 DiscardableInit(REQPACKET __far* rp)
 
   if(fVerbose)
   {
-    WriteString(szALSA, sizeof(szALSA)-1);
-    WriteString(szCopyRight3, sizeof(szCopyRight3)-1);
-    WriteString(szCopyRight2, sizeof(szCopyRight2)-1);
+    BootMsg("Universal Audio Driver for OS/2 and eComStation");
+    BootMsg("Copyright 2005-2021 Netlabs http://www.netlabs.org");
+    BootMsg("Copyright 2000-2021 The ALSA Project");
+#ifdef DEBUG
+    BootMsg("Version " UNIAUD_VERSION "-DEBUG. Based on ALSA " ALSA_VERSION);
+#else
+    BootMsg("Version " UNIAUD_VERSION ". Based on ALSA " ALSA_VERSION);
+#endif
   }
 
-  if(fDebug)
+  if(fDebug && !fQuiet)
   {
     sprintf(debugmsg, szCodeStartEnd, OffsetBeginCS32, OffsetFinalCS32);
     WriteString(debugmsg, strlen(debugmsg));
@@ -227,18 +259,19 @@ WORD32 DiscardableInit(REQPACKET __far* rp)
 
   char szMixerName[64];
   char szDeviceName[128];
+  char szMsg[200];
+  int  fOK = 0;
 
   if(OSS32_Initialize() != OSSERR_SUCCESS)
   {
-    WriteString(ERR_ERROR, sizeof(ERR_ERROR)-1);
-    WriteString(ERR_INIT, sizeof(ERR_INIT)-1);
+    BootMsg("Universal Audio Driver could not be loaded. Initialization failed.");
       if(szLastALSAError1[0])
       {
-        WriteString(szLastALSAError1, strlen(szLastALSAError1));
+        BootMsg(szLastALSAError1);
       }
       if(szLastALSAError2[0])
       {
-        WriteString(szLastALSAError2, strlen(szLastALSAError2));
+        BootMsg(szLastALSAError2);
       }
     // !! dont exit when error !! return RPDONE | RPERR_COMMAND;
   }
@@ -246,44 +279,46 @@ WORD32 DiscardableInit(REQPACKET __far* rp)
                               sizeof(szDeviceName),szMixerName,
                               sizeof(szMixerName), TRUE) != OSSERR_SUCCESS)
   {
-    WriteString(ERR_ERROR, sizeof(ERR_ERROR)-1);
-    WriteString(ERR_NAMES, sizeof(ERR_INIT)-1);
+    BootMsg("Universal Audio Driver could not be loaded. Query of the card names failed.");
     if(szLastALSAError1[0])
     {
-      WriteString(szLastALSAError1, strlen(szLastALSAError1));
+      BootMsg(szLastALSAError1);
     }
     if(szLastALSAError2[0])
     {
-      WriteString(szLastALSAError2, strlen(szLastALSAError2));
+      BootMsg(szLastALSAError2);
     }
 
     // !! dont exit when error !! return RPDONE | RPERR_COMMAND;
   }
   else
-  if(fVerbose)
   {
-    WriteString(szDeviceName, strlen(szDeviceName));
-    WriteString(szEOL, sizeof(szEOL)-1);
-    WriteString(szMixerFound, sizeof(szMixerFound)-1);
-    WriteString(szMixerName, strlen(szMixerName));
-    WriteString(szEOL, sizeof(szEOL)-1);
-
-    #if 0
-    for(int i=1;i<OSS32_MAX_AUDIOCARDS;i++)
+    fOK = 1;
+    if(fVerbose)
     {
-      if(OSS32_QueryNames(i, szDeviceName, sizeof(szDeviceName), szMixerName, sizeof(szMixerName)) == OSSERR_SUCCESS)
-      {
-        WriteString(szDeviceName, strlen(szDeviceName));
-        WriteString(szEOL, sizeof(szEOL)-1);
-        WriteString(szMixerFound, sizeof(szMixerFound)-1);
-        WriteString(szMixerName, strlen(szMixerName));
-        WriteString(szEOL, sizeof(szEOL)-1);
-      }
-      else break;
+      sprintf(szMsg, "Detected device: %s", szDeviceName);
+      BootMsg(szMsg);
+      sprintf(szMsg, "Detected mixer: %s", szMixerName);
+      BootMsg(szMsg);
     }
-    #endif
-    WriteString(szEOL, sizeof(szEOL)-1);
   }
+
+  /* /W waits for a key and /AA beeps: done by the 16 bit startup code (startup.asm) after the
+   * queued messages were written; the flags byte directly follows _MSG_TABLE16 (offset 6) */
+  {
+    MSG_TABLE FAR48 *msg = (MSG_TABLE FAR48 *)MAKE_FARPTR32(MSG_TABLE32);
+    UCHAR FAR48 *pflags = (UCHAR FAR48 *)msg + 6;
+    UCHAR flags = 0;
+
+    if (fWait && !fQuiet)
+    {
+      BootMsg("Universal Audio Driver. Press any key to continue.");
+      flags |= 1;
+    }
+    if (fBeep && fOK) flags |= 2;
+    *pflags = flags;
+  }
+
   // Complete the installation
   rp->init_out.usCodeEnd = _OffsetFinalCS16;
   rp->init_out.usDataEnd = _OffsetFinalDS16;
